@@ -1,40 +1,24 @@
-import React, {
-  createRef,
-  RefObject,
-  useEffect,
-  useMemo,
-  useState
-} from "react";
-import { RSocket } from "rsocket-core";
-import { encode, decode } from "@msgpack/msgpack";
+import React, { useEffect, useState } from "react";
+import { decode, encode } from "@msgpack/msgpack";
 import { Buffer } from "buffer";
 // @ts-ignore
 import pako from "pako";
+import { ContentState, Editor, EditorState } from "draft-js";
+import {
+  diff_match_patch,
+  DIFF_DELETE,
+  DIFF_EQUAL,
+  DIFF_INSERT
+} from "diff-match-patch";
+import {
+  AbstractSocket,
+  ApplyChange,
+  ChangesPayload,
+  ConnectedMessagePayload
+} from "./AbstractSocket";
 
 interface EditorMainProps {
-  socket: RSocket;
-}
-
-interface ConnectBaseMessage {
-  responseType: "ON_CONNECT" | "CHANGES";
-  payload: any;
-}
-
-interface ConnectedMessagePayload {
-  connectionId: string;
-}
-
-interface Change {
-  charId: string;
-  parentCharId?: string;
-  isRight: boolean;
-  disambiguator: number;
-  character: string;
-}
-
-interface ChangesPayload {
-  changes: Array<Change>;
-  isEndOfStream: boolean;
+  socket: AbstractSocket;
 }
 
 const GREATER = 1;
@@ -59,6 +43,23 @@ class Path {
       [...this.directions, direction],
       [...this.disambiguators, disambiguator]
     );
+  }
+
+  isAncestorOf(path: Path) {
+    const leftLength = this.length();
+    const rightLength = path.length();
+    if (rightLength < leftLength) {
+      return false;
+    }
+    for (let i = 0; i < leftLength; i++) {
+      if (
+        this.directions[i] !== path.directions[i] ||
+        this.disambiguators[i] !== path.disambiguators[i]
+      ) {
+        return false;
+      }
+    }
+    return true;
   }
 
   compare(anotherPath: Path) {
@@ -88,7 +89,8 @@ class Path {
 
 class CharDetails {
   // TODO: Timestamp
-  private charId: string;
+  public charId: string;
+  public parentCharId: string | undefined;
   private direction: boolean;
   private disambiguator: number;
   private path?: Path;
@@ -96,14 +98,26 @@ class CharDetails {
 
   public constructor(
     charId: string,
+    parentCharId: string | undefined,
     direction: boolean,
     disambiguator: number,
     character?: string
   ) {
+    this.parentCharId = parentCharId;
     this.character = character;
     this.charId = charId;
     this.direction = direction;
     this.disambiguator = disambiguator;
+  }
+
+  public getAsChange(): ApplyChange {
+    return {
+      charId: this.charId,
+      disambiguator: this.disambiguator,
+      character: this.character,
+      parentCharId: this.parentCharId,
+      isRight: this.direction
+    };
   }
 
   public updateCharacter(character: string | undefined) {
@@ -116,20 +130,23 @@ class CharDetails {
 
   public updatePath(parentPath: Path) {
     this.path = parentPath.addAncestor(this.direction, this.disambiguator);
+    return this;
   }
 }
 
-const INITIAL_REQUEST = 100;
 const BATCH_SIZE = 1000;
+const sortedCharIds = new Array<string>();
+const charDetailsMap = new Map<string, CharDetails>();
 
 export function EditorMainView(props: EditorMainProps) {
   const socket = props.socket;
   const [connectionId, setConnectionId] = useState<String>();
   const [isLoaded, setLoaded] = useState(false);
-  const charDetailsMap = new Map<string, CharDetails>();
   const dependenciesCharIdsByCharId = new Map<string, Set<string>>();
-  const sortedCharIds = new Array<string>();
-  const [documentContent, setDocumentContent] = useState<string>("");
+  const [editorState, setEditorState] = useState<EditorState>(
+    EditorState.createEmpty()
+  );
+  const [previousContent, setPreviousContent] = useState("");
 
   const findPath = (charId?: string): Path | undefined => {
     if (!charId) {
@@ -144,10 +161,7 @@ export function EditorMainView(props: EditorMainProps) {
       dependenciesCharIdsByCharId.set(dependency, new Set<string>());
     }
     const set = dependenciesCharIdsByCharId.get(dependency);
-    // printSet(set!!);
     dependenciesCharIdsByCharId.set(dependency, set!!.add(dependent));
-    // console.log(`Updated dependencies for ${dependency} (added ${dependent})`);
-    // printSet(dependenciesCharIdsByCharId.get(dependency)!!);
   };
 
   const getPathByIndex = (index: number) =>
@@ -179,6 +193,63 @@ export function EditorMainView(props: EditorMainProps) {
     return res;
   };
 
+  const generateUniqueId = () => {
+    return crypto.randomUUID();
+  };
+
+  const getDisambiguator = () => Number(connectionId!!);
+
+  const createNewCharacter = (
+    left: CharDetails | undefined,
+    right: CharDetails | undefined,
+    character: string
+  ): CharDetails => {
+    // console.log(`Inserting between ${JSON.stringify(left)} and ${JSON.stringify(right)} = ${character}`)
+    if (!left && !right) {
+      return new CharDetails(
+        generateUniqueId(),
+        undefined,
+        true,
+        getDisambiguator(),
+        character
+      ).updatePath(new Path([], []));
+    }
+    if (!left) {
+      return new CharDetails(
+        generateUniqueId(),
+        right?.charId,
+        false,
+        getDisambiguator(),
+        character
+      ).updatePath(right?.getPath()!!);
+    }
+    if (!right) {
+      return new CharDetails(
+        generateUniqueId(),
+        left?.charId,
+        true,
+        getDisambiguator(),
+        character
+      ).updatePath(left?.getPath()!!);
+    }
+    if (left.getPath()!!.isAncestorOf(right.getPath()!!)) {
+      return new CharDetails(
+        generateUniqueId(),
+        right?.charId,
+        false,
+        getDisambiguator(),
+        character
+      ).updatePath(right?.getPath()!!);
+    }
+    return new CharDetails(
+      generateUniqueId(),
+      left?.charId,
+      true,
+      getDisambiguator(),
+      character
+    ).updatePath(left?.getPath()!!);
+  };
+
   // Called when tree path from root all the way to charId is present
   const onPathReady = (charId: string, rootPath: Path) => {
     // No cycle is possible, cuz its tree :)
@@ -191,12 +262,18 @@ export function EditorMainView(props: EditorMainProps) {
       }
       const charDetails = charDetailsMap.get(pair.charId)!!;
       charDetails.updatePath(pair.parentPath);
-      // console.log(`Parent path for ${pair.charId} found!`);
       // Add to array
       const newCharacterIndex = binarySearch(charDetails.getPath()!!);
-      // console.log(`Adding character ${charDetails.character} to index ${newCharacterIndex}`);
-      sortedCharIds.splice(newCharacterIndex, 0, pair.charId);
-      // console.log(`Updated length = ${sortedCharIds.length}`);
+      if (charDetails.character) {
+        sortedCharIds.splice(newCharacterIndex, 0, pair.charId);
+      } else {
+        if (
+          newCharacterIndex >= 0 &&
+          newCharacterIndex < sortedCharIds.length
+        ) {
+          sortedCharIds.splice(newCharacterIndex, 1);
+        }
+      }
       // Update ancestors...
       const dependencies = dependenciesCharIdsByCharId.get(pair.charId);
       dependencies &&
@@ -211,19 +288,13 @@ export function EditorMainView(props: EditorMainProps) {
   };
 
   const recalculateDocumentContent = () => {
-    // console.log("Recalculating document content...");
-    const updatedDocumentContent = sortedCharIds
+    return sortedCharIds
       .map(v => charDetailsMap.get(v))
       .map(v => v && v.character)
-      .filter(v => v)
       .join("");
-    // // console.log(`New document content = `);
-    // // console.log(updatedDocumentContent);
-    return updatedDocumentContent;
   };
 
   const onDocumentChangesBatch = (changes: ChangesPayload) => {
-    // console.log("Received document changes batch!");
     if (changes.isEndOfStream) {
       setLoaded(true);
     }
@@ -231,12 +302,11 @@ export function EditorMainView(props: EditorMainProps) {
       const charId = change.charId;
       const isAlreadyPresent = charDetailsMap.has(charId);
       if (isAlreadyPresent) {
-        // console.log(`charId ${charId} already present!`);
         charDetailsMap.get(charId)!!.updateCharacter(change.character);
       } else {
-        // console.log(`Visiting ${charId}`);
         const charDetails = new CharDetails(
           charId,
+          change.parentCharId,
           change.isRight,
           change.disambiguator,
           change.character
@@ -247,14 +317,17 @@ export function EditorMainView(props: EditorMainProps) {
         if (parentPath) {
           onPathReady(charId, parentPath);
         } else {
-          // console.log(`Will visit charId ${charId} later when parent path ready...`);
           createDependency(charId, parentCharId!!);
         }
       }
     }
-    if (isLoaded || changes.isEndOfStream) {
-      setDocumentContent(recalculateDocumentContent());
-    }
+    const currentDocumentContent = recalculateDocumentContent();
+    setPreviousContent(currentDocumentContent);
+    setEditorState(
+      EditorState.createWithContent(
+        ContentState.createFromText(currentDocumentContent)
+      )
+    );
   };
 
   const [isConnectSent, setConnectSent] = useState(false);
@@ -264,47 +337,80 @@ export function EditorMainView(props: EditorMainProps) {
       return;
     }
     setConnectSent(true);
-    // TODO: Investigate SETUP message in RSocket, it might simplify design...
-    // console.log("Sending connect message to server...");
-    const connectMessage = Buffer.from(
-      encode({
-        type: "CONNECT",
-        batchSize: BATCH_SIZE
-      })
-    );
-
-    socket.requestStream({ data: connectMessage }, INITIAL_REQUEST, {
-      onNext(payload, isComplete) {
-        const buffer = payload.data;
-        // console.log(`On next ${buffer}`);
-        if (!buffer) {
-          console.warn("Skipping response message with null payload..");
-          return;
-        }
-        const decodedMessage = decode(new Uint8Array(buffer));
-        // console.log(`Decoded message ${decodedMessage}`);
-        const message = decodedMessage as ConnectBaseMessage;
-        // console.log(`Message ${decodedMessage} ${message.responseType}`);
-        if (message.responseType === "ON_CONNECT") {
-          // console.log("Received on connect message!");
-          const connectedData = message.payload as ConnectedMessagePayload;
-          setConnectionId(connectedData.connectionId);
-        } else {
-          onDocumentChangesBatch(message.payload as ChangesPayload);
-        }
-      },
-      onError(error) {
-        console.error(error);
-      },
-      onComplete() {
-        // console.log("on complete!");
-      },
-      onExtension(extendedType, content, canBeIgnored) {}
+    socket.connect(BATCH_SIZE, message => {
+      if (message.responseType === "ON_CONNECT") {
+        const connectedData = message.payload as ConnectedMessagePayload;
+        setConnectionId(connectedData.connectionId);
+      } else {
+        onDocumentChangesBatch(message.payload as ChangesPayload);
+      }
     });
   }, [socket, onDocumentChangesBatch, isConnectSent, setConnectSent]);
+
+  const getCharDetails = (index: number) => {
+    if (index < 0 || index >= sortedCharIds.length) {
+      return undefined;
+    }
+    return charDetailsMap.get(sortedCharIds[index]);
+  };
+
+  useEffect(() => {
+    const updatedDocumentContent = editorState
+      .getCurrentContent()
+      .getPlainText();
+    const diffMatchPatch = new diff_match_patch();
+    const differences = diffMatchPatch.diff_main(
+      previousContent,
+      updatedDocumentContent
+    );
+    let previousIndex = -1;
+    const changesToApply = new Array<ApplyChange>();
+    for (const diff of differences) {
+      const v = diff[0];
+      const str = diff[1];
+      if (v === DIFF_EQUAL) {
+      } else if (v === DIFF_DELETE) {
+        for (let i = 0; i < str.length; i++) {
+          const charIdToDelete = sortedCharIds[previousIndex + 1];
+          changesToApply.splice(changesToApply.length, 0, {
+            charId: charIdToDelete
+          });
+          const charDetails = charDetailsMap.get(charIdToDelete)!!;
+          sortedCharIds.splice(previousIndex + 1, 1);
+          charDetails.updateCharacter(undefined);
+        }
+      } else if (v === DIFF_INSERT) {
+        const nextCharDetails = getCharDetails(previousIndex + 1);
+        for (let i = 0; i < str.length; i++) {
+          const newCharacter = str.charAt(i);
+          const previousCharDetails = getCharDetails(previousIndex + i);
+          const newCharDetails = createNewCharacter(
+            previousCharDetails,
+            nextCharDetails,
+            newCharacter
+          );
+          charDetailsMap.set(newCharDetails.charId, newCharDetails);
+          changesToApply.splice(
+            changesToApply.length,
+            0,
+            newCharDetails.getAsChange()
+          );
+          sortedCharIds.splice(previousIndex + i + 1, 0, newCharDetails.charId);
+        }
+      }
+      previousIndex += str.length;
+    }
+    if (changesToApply.length === 0) {
+      return;
+    }
+    setPreviousContent(updatedDocumentContent);
+    socket.applyChanges(generateUniqueId(), changesToApply, success => {
+      console.log(`Change applied successfully = ${success}`);
+    });
+  }, [editorState]);
 
   if (!isLoaded) {
     return <p>Hold on, document is still loading!</p>;
   }
-  return <textarea value={documentContent} readOnly={true} />;
+  return <Editor editorState={editorState} onChange={setEditorState} />;
 }

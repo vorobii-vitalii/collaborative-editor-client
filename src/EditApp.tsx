@@ -5,14 +5,15 @@ import { WebsocketClientTransport } from "rsocket-websocket-client";
 import { RSocketConnector } from "rsocket-core/dist/RSocketConnector";
 import { ClientOptions } from "rsocket-websocket-client/dist/WebsocketClientTransport";
 import { EditorMainView } from "./EditorMainView";
+import { RSocketImpl } from "./RSocketImpl";
+import { ClassicWebSocket } from "./ClassicWebSocket";
 
 const options = { host: "localhost", port: 8002 };
+const WS_URL = "ws://localhost:10000/documents";
 
-const KEEP_ALIVE = 1000000;
-const LIFE_TIME = 100000;
 const MIME_TYPE = "text/plain";
 
-function App() {
+const RSocketEditApp = () => {
   window.Buffer = window.Buffer || require("buffer").Buffer;
 
   const [socket, setSocket] = useState<RSocket>();
@@ -28,8 +29,6 @@ function App() {
       }
     };
     const setupOptions = {
-      keepAlive: KEEP_ALIVE,
-      lifetime: LIFE_TIME,
       dataMimeType: MIME_TYPE,
       metadataMimeType: MIME_TYPE
     };
@@ -47,7 +46,20 @@ function App() {
   if (!socket) {
     return <p>Loading...</p>;
   }
-  return <EditorMainView socket={socket} />;
+  return <EditorMainView socket={new RSocketImpl(socket)} />;
+};
+
+const WebSocketEditApp = () => {
+  return <EditorMainView socket={new ClassicWebSocket(WS_URL)} />;
+};
+
+const isWS = true;
+
+function EditApp() {
+  if (isWS) {
+    return <WebSocketEditApp />;
+  }
+  return <RSocketEditApp />;
 }
 
-export default App;
+export default EditApp;
