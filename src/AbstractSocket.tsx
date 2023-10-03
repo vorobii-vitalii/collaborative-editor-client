@@ -20,7 +20,7 @@ export interface Change {
   parentCharId?: string;
   isRight: boolean;
   disambiguator: number;
-  character: string;
+  character?: string;
 }
 
 export interface ChangesPayload {
