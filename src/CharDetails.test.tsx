@@ -80,3 +80,15 @@ test('createBetween_Given_Right_Path_Undefined', () => {
       NEW_CHARACTER
     ).updatePath(new Path([LEFT_DIRECTION], [LEFT_DISAMBIGUATOR])));
 });
+
+test('updateCharacter', () => {
+  const charDetails = new CharDetails(
+      NEW_CHAR_ID,
+      RIGHT_CHAR_ID,
+      false,
+      NEW_DISAMBIGUATOR,
+      NEW_CHARACTER
+  );
+  charDetails.updateCharacter('X');
+  expect(charDetails.character).toEqual('X');
+});
