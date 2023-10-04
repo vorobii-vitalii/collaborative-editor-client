@@ -7,11 +7,15 @@ import { ClientOptions } from "rsocket-websocket-client/dist/WebsocketClientTran
 import { EditorMainView } from "./EditorMainView";
 import { RSocketImpl } from "./RSocketImpl";
 import { ClassicWebSocket } from "./ClassicWebSocket";
+import {DocumentContext} from "./DocumentContext";
 
 const options = { host: "localhost", port: 8002 };
 const WS_URL = "ws://localhost:10000/documents";
 
 const MIME_TYPE = "text/plain";
+
+const uuidGenerator = () => crypto.randomUUID();
+const documentContext = new DocumentContext();
 
 const RSocketEditApp = () => {
   window.Buffer = window.Buffer || require("buffer").Buffer;
@@ -46,11 +50,11 @@ const RSocketEditApp = () => {
   if (!socket) {
     return <p>Loading...</p>;
   }
-  return <EditorMainView socket={new RSocketImpl(socket)} />;
+  return <EditorMainView socket={new RSocketImpl(socket)} idGenerator={uuidGenerator} documentContext={documentContext} />;
 };
 
 const WebSocketEditApp = () => {
-  return <EditorMainView socket={new ClassicWebSocket(WS_URL)} />;
+  return <EditorMainView socket={new ClassicWebSocket(WS_URL)} idGenerator={uuidGenerator} documentContext={documentContext} />;
 };
 
 const isWS = true;
