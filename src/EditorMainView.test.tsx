@@ -179,3 +179,169 @@ test('userChangeToEmptyDocument', () => {
     ]);
     expect(socket.getUserChanges()).toEqual(expectedChanges)
 });
+
+test('userChangeToNonEmptyDocument_Beginning', () => {
+    const socket = new StubSocket([
+        {
+            responseType: "ON_CONNECT",
+            payload: {
+                connectionId: CONNECTION_ID
+            }
+        },
+        {
+            responseType: "CHANGES",
+            payload: {
+                changes: [
+                    {
+                        charId: "1",
+                        disambiguator: 1,
+                        character: "B",
+                        isRight: true,
+                        parentCharId: undefined
+                    } as Change
+                ],
+                isEndOfStream: false,
+                source: "source"
+            }
+        },
+        {
+            responseType: "CHANGES",
+            payload: {
+                changes: [],
+                isEndOfStream: true,
+                source: "source"
+            }
+        }
+    ]);
+    const { getByTestId } = render(
+        <EditorMainView socket={socket} idGenerator={testIdGenerator} documentContext={new DocumentContext()} />,
+    );
+    const textarea = getByTestId(DOCUMENT_TEXTAREA_ID);
+    expect(textarea).toHaveTextContent("B");
+    fireEvent.change(textarea, {target: {value: 'AB'}})
+    const expectedChanges = new Map<string, Array<ApplyChange>>();
+    expectedChanges.set(NEW_ID, [
+        {
+            charId: NEW_ID,
+            character: 'A',
+            isRight: false,
+            parentCharId: "1",
+            disambiguator: CONNECTION_ID
+        }
+    ]);
+    expect(textarea).toHaveTextContent("AB");
+    expect(socket.getUserChanges()).toEqual(expectedChanges)
+});
+
+test('userChangeToNonEmptyDocument_End', () => {
+    const socket = new StubSocket([
+        {
+            responseType: "ON_CONNECT",
+            payload: {
+                connectionId: CONNECTION_ID
+            }
+        },
+        {
+            responseType: "CHANGES",
+            payload: {
+                changes: [
+                    {
+                        charId: "1",
+                        disambiguator: 1,
+                        character: "B",
+                        isRight: true,
+                        parentCharId: undefined
+                    } as Change
+                ],
+                isEndOfStream: false,
+                source: "source"
+            }
+        },
+        {
+            responseType: "CHANGES",
+            payload: {
+                changes: [],
+                isEndOfStream: true,
+                source: "source"
+            }
+        }
+    ]);
+    const { getByTestId } = render(
+        <EditorMainView socket={socket} idGenerator={testIdGenerator} documentContext={new DocumentContext()} />,
+    );
+    const textarea = getByTestId(DOCUMENT_TEXTAREA_ID);
+    expect(textarea).toHaveTextContent("B");
+    fireEvent.change(textarea, {target: {value: 'BC'}})
+    const expectedChanges = new Map<string, Array<ApplyChange>>();
+    expectedChanges.set(NEW_ID, [
+        {
+            charId: NEW_ID,
+            character: 'C',
+            isRight: true,
+            parentCharId: "1",
+            disambiguator: CONNECTION_ID
+        }
+    ]);
+    expect(textarea).toHaveTextContent("BC");
+    expect(socket.getUserChanges()).toEqual(expectedChanges)
+});
+
+test('userChangeToNonEmptyDocument_Between', () => {
+    const socket = new StubSocket([
+        {
+            responseType: "ON_CONNECT",
+            payload: {
+                connectionId: CONNECTION_ID
+            }
+        },
+        {
+            responseType: "CHANGES",
+            payload: {
+                changes: [
+                    {
+                        charId: "1",
+                        disambiguator: 1,
+                        character: "B",
+                        isRight: true,
+                        parentCharId: undefined
+                    } as Change,
+                    {
+                        charId: "2",
+                        disambiguator: 2,
+                        character: "D",
+                        isRight: true,
+                        parentCharId: "1"
+                    } as Change
+                ],
+                isEndOfStream: false,
+                source: "source"
+            }
+        },
+        {
+            responseType: "CHANGES",
+            payload: {
+                changes: [],
+                isEndOfStream: true,
+                source: "source"
+            }
+        }
+    ]);
+    const { getByTestId } = render(
+        <EditorMainView socket={socket} idGenerator={testIdGenerator} documentContext={new DocumentContext()} />,
+    );
+    const textarea = getByTestId(DOCUMENT_TEXTAREA_ID);
+    expect(textarea).toHaveTextContent("BD");
+    fireEvent.change(textarea, {target: {value: 'BXD'}})
+    const expectedChanges = new Map<string, Array<ApplyChange>>();
+    expectedChanges.set(NEW_ID, [
+        {
+            charId: NEW_ID,
+            character: 'X',
+            isRight: false,
+            parentCharId: "2",
+            disambiguator: CONNECTION_ID
+        }
+    ]);
+    expect(textarea).toHaveTextContent("BXD");
+    expect(socket.getUserChanges()).toEqual(expectedChanges)
+});
